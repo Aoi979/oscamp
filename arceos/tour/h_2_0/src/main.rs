@@ -11,10 +11,11 @@ use riscv_vcpu::AxVCpuExitReason;
 use axerrno::{ax_err_type, AxResult};
 use memory_addr::VirtAddr;
 use alloc::string::String;
+use alloc::vec::Vec;
 use std::fs::File;
 use riscv_vcpu::RISCVVCpu;
 use riscv_vcpu::AxVCpuExitReason::NestedPageFault;
-
+use zerocopy::AsBytes;
 const VM_ASPACE_BASE: usize = 0x0;
 const VM_ASPACE_SIZE: usize = 0x7fff_ffff_f000;
 const PHY_MEM_START: usize = 0x8000_0000;
@@ -23,6 +24,7 @@ const KERNEL_BASE: usize = 0x8020_0000;
 
 use axmm::AddrSpace;
 use axhal::paging::MappingFlags;
+use std::println;
 
 #[no_mangle]
 fn main() {
@@ -59,16 +61,25 @@ fn main() {
                     debug!("addr {:#x} access {:#x}", addr, access_flags);
                     assert_eq!(addr, 0x2200_0000.into(), "Now we ONLY handle pflash#2.");
                     let mapping_flags = MappingFlags::from_bits(0xf).unwrap();
-                    // Passthrough-Mode
-                    let _ = aspace.map_linear(addr, addr.as_usize().into(), 4096, mapping_flags);
+                    // // Passthrough-Mode
+                    // let _ = aspace.map_linear(addr, addr.as_usize().into(), 4096, mapping_flags);
 
-                    /*
                     // Emulator-Mode
                     // Pretend to load file to fill buffer.
-                    let buf = "pfld";
-                    aspace.map_alloc(addr, 4096, mapping_flags, true);
-                    aspace.write(addr, buf.as_bytes());
-                    */
+                    let image_path = String::from("/sbin/pflash.img");  // 镜像文件路径
+
+                    match load_pflash_image(image_path) {
+                        Ok(mut data) => {
+                            println!("Successfully loaded image, size: {} bytes", data.len());
+                            aspace.map_alloc(addr, 4096, mapping_flags, true).unwrap();
+                            aspace.write(addr, data.as_bytes_mut()).unwrap();
+                        },
+                        Err(err) => {
+                            println!("Failed to load image: {:?}", err);
+                        },
+                    }
+                    // let buf = "pfld";
+
                 },
                 _ => {
                     panic!("Unhandled VM-Exit: {:?}", exit_reason);
@@ -80,6 +91,25 @@ fn main() {
         }
     }
 }
+fn load_pflash_image(image_path: String) -> AxResult<Vec<u8>> {
+    use std::io::{BufReader, Read};
+    let (image_file, _image_size) = open_image_file(image_path.as_str())?;
+
+    let mut file = BufReader::new(image_file);
+
+    let mut buffer = vec![0u8; 4];
+
+    file.read_exact(&mut buffer).map_err(|err| {
+        ax_err_type!(
+            Io,
+            format!("Failed in reading from file {}, err {:?}", image_path, err)
+        )
+    })?;
+
+    Ok(buffer)
+}
+
+
 
 fn load_vm_image(image_path: String, image_load_gpa: VirtAddr, aspace: &AddrSpace) -> AxResult {
     use std::io::{BufReader, Read};

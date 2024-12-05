@@ -11,3 +11,4 @@ axmm = { workspace = true }
 riscv_vcpu = { path = "../../modules/riscv_vcpu" }
 axerrno = "0.1"
 memory_addr = "0.3"
+zerocopy = "0.7.35"

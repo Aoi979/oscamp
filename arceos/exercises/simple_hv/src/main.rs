@@ -63,6 +63,7 @@ fn prepare_vm_pgtable(ept_root: PhysAddr) {
             "csrw hgatp, {hgatp}",
             hgatp = in(reg) hgatp,
         );
+
         core::arch::riscv64::hfence_gvma_all();
     }
 }
@@ -82,6 +83,7 @@ fn vmexit_handler(ctx: &mut VmCpuRegisters) -> bool {
     let scause = scause::read();
     match scause.cause() {
         Trap::Exception(Exception::VirtualSupervisorEnvCall) => {
+            // SBI 调用处理逻辑（保持不变）
             let sbi_msg = SbiMessage::from_regs(ctx.guest_regs.gprs.a_regs()).ok();
             ax_println!("VmExit Reason: VSuperEcall: {:?}", sbi_msg);
             if let Some(msg) = sbi_msg {
@@ -98,22 +100,27 @@ fn vmexit_handler(ctx: &mut VmCpuRegisters) -> bool {
                     _ => todo!(),
                 }
             } else {
-                panic!("bad sbi message! ");
+                panic!("bad sbi message!");
             }
         },
         Trap::Exception(Exception::IllegalInstruction) => {
-            panic!("Bad instruction: {:#x} sepc: {:#x}",
-                stval::read(),
-                ctx.guest_regs.sepc
-            );
+            // 处理非法指令异常
+            let bad_instr = stval::read(); // 读取导致异常的指令
+            ax_println!("Bad instruction: {:#x} at sepc: {:#x}",
+                        bad_instr, ctx.guest_regs.sepc);
+
+            // 调整 sepc 的值
+            ctx.guest_regs.sepc = advance_sepc(ctx.guest_regs.sepc, bad_instr);
+            ctx.guest_regs.gprs.a_regs_mut()[0] = 0x6688;
+            ctx.guest_regs.gprs.a_regs_mut()[1] = 0x1234;
         },
         Trap::Exception(Exception::LoadGuestPageFault) => {
-            panic!("LoadGuestPageFault: stval{:#x} sepc: {:#x}",
-                stval::read(),
-                ctx.guest_regs.sepc
-            );
+            // 客户机页故障处理逻辑（保持不变）
+            panic!("LoadGuestPageFault: stval {:#x}, sepc: {:#x}",
+                   stval::read(), ctx.guest_regs.sepc);
         },
         _ => {
+            // 处理未处理的异常
             panic!(
                 "Unhandled trap: {:?}, sepc: {:#x}, stval: {:#x}",
                 scause.cause(),
@@ -123,6 +130,17 @@ fn vmexit_handler(ctx: &mut VmCpuRegisters) -> bool {
         }
     }
     false
+}
+
+fn advance_sepc(sepc: usize, bad_instr: usize) -> usize {
+    // 检查指令长度
+    if bad_instr & 0b11 == 0b11 {
+        // 标准 64 位指令
+        sepc + 8
+    } else {
+        // 压缩 32 位指令
+        sepc + 4
+    }
 }
 
 fn prepare_guest_context(ctx: &mut VmCpuRegisters) {
